@@ -1,1 +1,111 @@
+import socket
+import struct
+import json
+import os
 
+
+class TCPClient:
+    IP_PORT = ('127.0.0.1', 8999)
+    request_queue_size = 5
+    allow_reuse_address = False
+    max_packet_size = 8192
+    share_dir = r'C:\client'
+
+    def __init__(self, address=IP_PORT, connect=True):
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if connect:
+            try:
+                self.client.connect(address)
+            except Exception as e:
+                self.client.close()
+                raise e
+
+    def run(self):
+        while True:
+            # 1、发命令
+            inp = input('>> ').strip()  # 'get a.txt'
+            if not inp: continue
+            self.client.send(inp.encode('utf-8'))
+            cmd = inp.split()
+
+            if hasattr(self, cmd[0]):
+                func = getattr(self, cmd[0])
+                func(cmd[1])
+
+        client.close()
+
+    @staticmethod
+    def bytes2human(n):
+        symbols = ('K', 'M', 'G', 'T', 'P', 'E')
+        prefix = {}
+        for i, s in enumerate(symbols):
+            # << 左移” 左移一位表示乘2 即1 << 1=2，二位就表示4 即1 << 2=4，
+            # 10位就表示1024 即1 << 10=1024 就是2的n次方
+            prefix[s] = 1 << (i + 1) * 10
+        for s in reversed(symbols):
+            if n >= prefix[s]:
+                value = float(n) / prefix[s]
+                return '%.2f%s' % (value, s)
+        return "%sB" % n
+
+    def get(self, file_name):
+        # 2、以写的方式打开一个新文件，接收服务端发来的文件的内容写入客户的新文件
+        # 第一步：先收报头的长度
+        header_len = self.client.recv(4)
+        header_size = struct.unpack('i', header_len)[0]
+
+        # 第二步：再收报头
+        header_json = self.client.recv(header_size).decode('utf-8')
+
+        # 第三步：从报头中解析出对真实数据的描述信息
+        header_dict = json.loads(header_json)
+        file_size = header_dict['file_size']
+        file_name = header_dict['file_name']
+
+        print(os.path.join(self.share_dir, file_name))
+        # 第四步：接收真实的数据,写入文件
+        with open(os.path.join(self.share_dir, file_name), 'wb') as f:
+            recv_size = 0
+            while recv_size < file_size:
+                line = self.client.recv(self.max_packet_size)
+                f.write(line)
+                recv_size += len(line)
+                rate = recv_size / file_size * 100
+                print('总大小：%s   已下载：%%%.2f' % (self.bytes2human(file_size), rate))
+
+    def put(self, file_name):
+        # 向服务端上传文件
+        print('put')
+        try:
+            if not os.path.isfile(os.path.join(self.share_dir, file_name)):
+                print('file:%s is not exists' % os.path.join(self.share_dir, file_name))
+                return
+            else:
+                file_size = os.path.getsize(os.path.join(self.share_dir, file_name))
+                header_dict = {
+                    'file_name': file_name,
+                    'md5': 'xxx',
+                    'file_size': file_size
+
+                }
+
+                header_json = json.dumps(header_dict, ensure_ascii='False', indent=2)
+                header_bytes = header_json.encode('utf-8')
+                # 第二步：先发送报头的长度
+                self.client.send(struct.pack('i', len(header_bytes)))
+
+                # 第三步：再发报头
+                self.client.send(header_bytes)
+
+                # 第四步：再发送真实的数据
+                with open(os.path.join(self.share_dir, file_name), 'rb') as f:
+                    for line in f:
+                        self.client.send(line)
+
+        except Exception as e:
+            print(e)
+
+
+if __name__ == '__main__':
+    c = TCPClient()
+    c.run()
